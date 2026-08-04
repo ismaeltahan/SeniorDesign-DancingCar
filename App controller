@@ -108,8 +108,8 @@ const unsigned long RESET_DOWN_TIME = 2000;
 
 void setup() {
 
-  Serial.begin(9600);
-  Serial1.begin(9600);
+  Serial.begin(115200);
+  Serial1.begin(115200);
 
 
   // FL

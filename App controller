@@ -677,5 +677,5 @@ void stopAllActuators() {
   stopActuator(FL_RPWM, FL_LPWM);
   stopActuator(FR_RPWM, FR_LPWM);
   stopActuator(BR_RPWM, BR_LPWM);
-  stopActuator(BL_RPWM, BL_LPWM);
+  stopActuator(BL_RPWM, BL_LPWM); 
 }

@@ -1,0 +1,681 @@
+// ======================================================
+// 4 ACTUATORS + BLUETOOTH + DANCE 1 + DANCE 2 + RESET
+// Arduino Mega 2560
+//
+// Bluetooth:
+// TXD -> Mega pin 19 (RX1)
+// RXD -> Mega pin 18 (TX1)
+//
+// Manual commands:
+// FL:10 to FL:50
+// FR:10 to FR:50
+// BR:10 to BR:50
+// BL:10 to BL:50
+//
+// 10 = full speed direction 1
+// 30 = stop
+// 50 = full speed direction 2
+//
+// Special commands:
+// Dance 1
+// Dance 2
+// RESET
+// STOP
+// ======================================================
+
+
+// ---------------- FRONT LEFT ----------------
+const int FL_RPWM = 2;
+const int FL_LPWM = 3;
+const int FL_REN  = 22;
+const int FL_LEN  = 23;
+
+
+// ---------------- FRONT RIGHT ----------------
+const int FR_RPWM = 4;
+const int FR_LPWM = 5;
+const int FR_REN  = 24;
+const int FR_LEN  = 25;
+
+
+// ---------------- BACK RIGHT ----------------
+const int BR_RPWM = 8;
+const int BR_LPWM = 9;
+const int BR_REN  = 28;
+const int BR_LEN  = 29;
+
+
+// ---------------- BACK LEFT ----------------
+const int BL_RPWM = 6;
+const int BL_LPWM = 7;
+const int BL_REN  = 26;
+const int BL_LEN  = 27;
+
+
+// Command storage
+String usbCommand = "";
+String bluetoothCommand = "";
+
+unsigned long lastBluetoothCharacter = 0;
+const unsigned long bluetoothDelay = 50;
+
+
+// ======================================================
+// MOVEMENT VALUES
+// ======================================================
+
+const int UP_VALUE   = 50;
+const int DOWN_VALUE = 10;
+const int STOP_VALUE = 30;
+
+
+// ======================================================
+// DANCE SETTINGS
+// ======================================================
+
+// Reverse dance direction every 3 seconds
+const unsigned long DANCE_MOVE_TIME = 3000;
+
+// Run each dance for 30 seconds total
+const unsigned long DANCE_TOTAL_TIME = 30000;
+
+// 0 = no dance
+// 1 = Dance 1
+// 2 = Dance 2
+int activeDance = 0;
+
+int dancePhase = 0;
+
+unsigned long danceStartTime = 0;
+unsigned long dancePhaseStart = 0;
+
+
+// ======================================================
+// RESET SETTINGS
+// ======================================================
+
+bool resetActive = false;
+unsigned long resetStartTime = 0;
+
+// All actuators move down for this long, then stop.
+// Start short and increase carefully if needed.
+const unsigned long RESET_DOWN_TIME = 2000;
+
+
+// ======================================================
+// SETUP
+// ======================================================
+
+void setup() {
+
+  Serial.begin(9600);
+  Serial1.begin(9600);
+
+
+  // FL
+  pinMode(FL_RPWM, OUTPUT);
+  pinMode(FL_LPWM, OUTPUT);
+  pinMode(FL_REN, OUTPUT);
+  pinMode(FL_LEN, OUTPUT);
+
+
+  // FR
+  pinMode(FR_RPWM, OUTPUT);
+  pinMode(FR_LPWM, OUTPUT);
+  pinMode(FR_REN, OUTPUT);
+  pinMode(FR_LEN, OUTPUT);
+
+
+  // BR
+  pinMode(BR_RPWM, OUTPUT);
+  pinMode(BR_LPWM, OUTPUT);
+  pinMode(BR_REN, OUTPUT);
+  pinMode(BR_LEN, OUTPUT);
+
+
+  // BL
+  pinMode(BL_RPWM, OUTPUT);
+  pinMode(BL_LPWM, OUTPUT);
+  pinMode(BL_REN, OUTPUT);
+  pinMode(BL_LEN, OUTPUT);
+
+
+  // Enable all IBT-2 drivers
+  digitalWrite(FL_REN, HIGH);
+  digitalWrite(FL_LEN, HIGH);
+
+  digitalWrite(FR_REN, HIGH);
+  digitalWrite(FR_LEN, HIGH);
+
+  digitalWrite(BR_REN, HIGH);
+  digitalWrite(BR_LEN, HIGH);
+
+  digitalWrite(BL_REN, HIGH);
+  digitalWrite(BL_LEN, HIGH);
+
+
+  // Start all actuators stopped
+  stopAllActuators();
+
+
+  Serial.println("================================");
+  Serial.println("4 Actuator Controller Ready");
+  Serial.println("USB + Bluetooth Ready");
+  Serial.println("10-29 = Direction 1");
+  Serial.println("30 = STOP");
+  Serial.println("31-50 = Direction 2");
+  Serial.println("Dance 1 = Front/Back");
+  Serial.println("Dance 2 = Right/Left");
+  Serial.println("RESET = All actuators move down");
+  Serial.println("STOP = Stop everything");
+  Serial.println("================================");
+}
+
+
+// ======================================================
+// MAIN LOOP
+// ======================================================
+
+void loop() {
+
+  updateDance();
+  updateReset();
+
+
+  // ====================================================
+  // USB SERIAL MONITOR
+  // ====================================================
+
+  if (Serial.available() > 0) {
+
+    usbCommand = Serial.readStringUntil('\n');
+    usbCommand.trim();
+
+    if (usbCommand.length() > 0) {
+
+      Serial.print("USB received: ");
+      Serial.println(usbCommand);
+
+      processCommand(usbCommand);
+    }
+  }
+
+
+  // ====================================================
+  // BLUETOOTH
+  // ====================================================
+
+  while (Serial1.available() > 0) {
+
+    char c = Serial1.read();
+
+    if (c == '\n' || c == '\r') {
+
+      if (bluetoothCommand.length() > 0) {
+
+        bluetoothCommand.trim();
+
+        Serial.print("Bluetooth received: ");
+        Serial.println(bluetoothCommand);
+
+        processCommand(bluetoothCommand);
+
+        bluetoothCommand = "";
+      }
+    }
+
+    else {
+
+      bluetoothCommand += c;
+      lastBluetoothCharacter = millis();
+    }
+  }
+
+
+  // Process Bluetooth command even without newline
+  if (
+    bluetoothCommand.length() > 0 &&
+    millis() - lastBluetoothCharacter > bluetoothDelay
+  ) {
+
+    bluetoothCommand.trim();
+
+    Serial.print("Bluetooth received: ");
+    Serial.println(bluetoothCommand);
+
+    processCommand(bluetoothCommand);
+
+    bluetoothCommand = "";
+  }
+}
+
+
+// ======================================================
+// PROCESS COMMAND
+// ======================================================
+
+void processCommand(String command) {
+
+  command.trim();
+
+
+  // Start Dance 1
+  if (command == "Dance 1" || command == "DANCE 1") {
+
+    startDance1();
+    return;
+  }
+
+
+  // Start Dance 2
+  if (command == "Dance 2" || command == "DANCE 2") {
+
+    startDance2();
+    return;
+  }
+
+
+  // Start RESET
+  if (command == "RESET") {
+
+    startReset();
+    return;
+  }
+
+
+  // Stop everything immediately
+  if (command == "STOP") {
+
+    activeDance = 0;
+    dancePhase = 0;
+
+    resetActive = false;
+
+    stopAllActuators();
+
+    Serial.println("ALL ACTUATORS STOPPED");
+    return;
+  }
+
+
+  // Manual command cancels any active dance or reset
+  if (activeDance != 0 || resetActive) {
+
+    activeDance = 0;
+    dancePhase = 0;
+
+    resetActive = false;
+
+    stopAllActuators();
+
+    Serial.println("Automatic movement cancelled by manual command");
+  }
+
+
+  int colonPosition = command.indexOf(':');
+
+  if (colonPosition < 1) {
+
+    Serial.print("Invalid command: ");
+    Serial.println(command);
+
+    return;
+  }
+
+
+  String device =
+    command.substring(0, colonPosition);
+
+  int value =
+    command.substring(colonPosition + 1).toInt();
+
+
+  value = constrain(value, 10, 50);
+
+
+  if (device == "FL") {
+
+    controlActuator(FL_RPWM, FL_LPWM, value);
+
+    Serial.print("FL = ");
+    Serial.println(value);
+  }
+
+  else if (device == "FR") {
+
+    controlActuator(FR_RPWM, FR_LPWM, value);
+
+    Serial.print("FR = ");
+    Serial.println(value);
+  }
+
+  else if (device == "BR") {
+
+    controlActuator(BR_RPWM, BR_LPWM, value);
+
+    Serial.print("BR = ");
+    Serial.println(value);
+  }
+
+  else if (device == "BL") {
+
+    controlActuator(BL_RPWM, BL_LPWM, value);
+
+    Serial.print("BL = ");
+    Serial.println(value);
+  }
+
+  else {
+
+    Serial.print("Unknown actuator: ");
+    Serial.println(device);
+  }
+}
+
+
+// ======================================================
+// START DANCE 1
+// Front up / Back down
+// ======================================================
+
+void startDance1() {
+
+  resetActive = false;
+
+  stopAllActuators();
+
+  activeDance = 1;
+  dancePhase = 1;
+
+  danceStartTime = millis();
+  dancePhaseStart = millis();
+
+  setDance1Phase1();
+
+  Serial.println("Dance 1 started");
+  Serial.println("Front UP, Back DOWN");
+}
+
+
+// ======================================================
+// START DANCE 2
+// Right up / Left down
+// ======================================================
+
+void startDance2() {
+
+  resetActive = false;
+
+  stopAllActuators();
+
+  activeDance = 2;
+  dancePhase = 1;
+
+  danceStartTime = millis();
+  dancePhaseStart = millis();
+
+  setDance2Phase1();
+
+  Serial.println("Dance 2 started");
+  Serial.println("Right side UP, Left side DOWN");
+}
+
+
+// ======================================================
+// UPDATE ACTIVE DANCE
+// ======================================================
+
+void updateDance() {
+
+  if (activeDance == 0) {
+    return;
+  }
+
+
+  // Stop after 30 seconds
+  if (millis() - danceStartTime >= DANCE_TOTAL_TIME) {
+
+    int finishedDance = activeDance;
+
+    stopAllActuators();
+
+    activeDance = 0;
+    dancePhase = 0;
+
+    Serial.print("Dance ");
+    Serial.print(finishedDance);
+    Serial.println(" finished after 30 seconds");
+
+    return;
+  }
+
+
+  // Reverse every 3 seconds
+  if (millis() - dancePhaseStart >= DANCE_MOVE_TIME) {
+
+    dancePhaseStart = millis();
+
+
+    if (dancePhase == 1) {
+
+      dancePhase = 2;
+
+      if (activeDance == 1) {
+
+        setDance1Phase2();
+        Serial.println("Front DOWN, Back UP");
+      }
+
+      else if (activeDance == 2) {
+
+        setDance2Phase2();
+        Serial.println("Right side DOWN, Left side UP");
+      }
+    }
+
+    else {
+
+      dancePhase = 1;
+
+      if (activeDance == 1) {
+
+        setDance1Phase1();
+        Serial.println("Front UP, Back DOWN");
+      }
+
+      else if (activeDance == 2) {
+
+        setDance2Phase1();
+        Serial.println("Right side UP, Left side DOWN");
+      }
+    }
+  }
+}
+
+
+// ======================================================
+// DANCE 1 — PHASE 1
+// Front up, back down
+// ======================================================
+
+void setDance1Phase1() {
+
+  controlActuator(FL_RPWM, FL_LPWM, UP_VALUE);
+  controlActuator(FR_RPWM, FR_LPWM, UP_VALUE);
+
+  controlActuator(BR_RPWM, BR_LPWM, DOWN_VALUE);
+  controlActuator(BL_RPWM, BL_LPWM, DOWN_VALUE);
+}
+
+
+// ======================================================
+// DANCE 1 — PHASE 2
+// Front down, back up
+// ======================================================
+
+void setDance1Phase2() {
+
+  controlActuator(FL_RPWM, FL_LPWM, DOWN_VALUE);
+  controlActuator(FR_RPWM, FR_LPWM, DOWN_VALUE);
+
+  controlActuator(BR_RPWM, BR_LPWM, UP_VALUE);
+  controlActuator(BL_RPWM, BL_LPWM, UP_VALUE);
+}
+
+
+// ======================================================
+// DANCE 2 — PHASE 1
+// Right side up, left side down
+// ======================================================
+
+void setDance2Phase1() {
+
+  controlActuator(FR_RPWM, FR_LPWM, UP_VALUE);
+  controlActuator(BR_RPWM, BR_LPWM, UP_VALUE);
+
+  controlActuator(FL_RPWM, FL_LPWM, DOWN_VALUE);
+  controlActuator(BL_RPWM, BL_LPWM, DOWN_VALUE);
+}
+
+
+// ======================================================
+// DANCE 2 — PHASE 2
+// Right side down, left side up
+// ======================================================
+
+void setDance2Phase2() {
+
+  controlActuator(FR_RPWM, FR_LPWM, DOWN_VALUE);
+  controlActuator(BR_RPWM, BR_LPWM, DOWN_VALUE);
+
+  controlActuator(FL_RPWM, FL_LPWM, UP_VALUE);
+  controlActuator(BL_RPWM, BL_LPWM, UP_VALUE);
+}
+
+
+// ======================================================
+// START RESET
+// All actuators move down
+// ======================================================
+
+void startReset() {
+
+  activeDance = 0;
+  dancePhase = 0;
+
+  stopAllActuators();
+
+  resetActive = true;
+  resetStartTime = millis();
+
+  controlActuator(FL_RPWM, FL_LPWM, DOWN_VALUE);
+  controlActuator(FR_RPWM, FR_LPWM, DOWN_VALUE);
+  controlActuator(BR_RPWM, BR_LPWM, DOWN_VALUE);
+  controlActuator(BL_RPWM, BL_LPWM, DOWN_VALUE);
+
+  Serial.println("RESET started");
+  Serial.println("All actuators moving DOWN");
+}
+
+
+// ======================================================
+// UPDATE RESET
+// ======================================================
+
+void updateReset() {
+
+  if (!resetActive) {
+    return;
+  }
+
+
+  if (millis() - resetStartTime >= RESET_DOWN_TIME) {
+
+    stopAllActuators();
+
+    resetActive = false;
+
+    Serial.println("RESET complete");
+    Serial.println("All actuators stopped");
+  }
+}
+
+
+// ======================================================
+// CONTROL ONE ACTUATOR
+// ======================================================
+
+void controlActuator(
+  int RPWM,
+  int LPWM,
+  int value
+) {
+
+  // Stop
+  if (value == STOP_VALUE) {
+
+    analogWrite(RPWM, 0);
+    analogWrite(LPWM, 0);
+
+    return;
+  }
+
+
+  // Direction 1
+  if (value < STOP_VALUE) {
+
+    int speedValue =
+      map(value, 10, 30, 255, 0);
+
+    speedValue =
+      constrain(speedValue, 0, 255);
+
+    analogWrite(RPWM, speedValue);
+    analogWrite(LPWM, 0);
+
+    return;
+  }
+
+
+  // Direction 2
+  if (value > STOP_VALUE) {
+
+    int speedValue =
+      map(value, 30, 50, 0, 255);
+
+    speedValue =
+      constrain(speedValue, 0, 255);
+
+    analogWrite(RPWM, 0);
+    analogWrite(LPWM, speedValue);
+
+    return;
+  }
+}
+
+
+// ======================================================
+// STOP ONE ACTUATOR
+// ======================================================
+
+void stopActuator(
+  int RPWM,
+  int LPWM
+) {
+
+  analogWrite(RPWM, 0);
+  analogWrite(LPWM, 0);
+}
+
+
+// ======================================================
+// STOP ALL ACTUATORS
+// ======================================================
+
+void stopAllActuators() {
+
+  stopActuator(FL_RPWM, FL_LPWM);
+  stopActuator(FR_RPWM, FR_LPWM);
+  stopActuator(BR_RPWM, BR_LPWM);
+  stopActuator(BL_RPWM, BL_LPWM);
+}
